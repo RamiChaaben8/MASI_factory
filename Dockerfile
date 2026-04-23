@@ -1,36 +1,37 @@
 # Stage 1: Build
-FROM debian:stable-slim AS build
+FROM debian:bookworm-slim AS build
 
-# Install OpenJDK 17 and build tools
 RUN apt-get update && apt-get install -y \
     openjdk-17-jdk \
     wget \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Download and install JavaFX SDK (x64)
-ENV JFX_VERSION=17.0.10
-RUN wget https://download2.gluonhq.com/openjfx/${JFX_VERSION}/openjfx-17.0.10_linux-x64_bin-sdk.zip -O /tmp/javafx.zip \
+# Download JavaFX SDK 21
+ENV JFX_VERSION=21.0.1
+RUN wget https://download2.gluonhq.com/openjfx/${JFX_VERSION}/openjfx-${JFX_VERSION}_linux-x64_bin-sdk.zip -O /tmp/javafx.zip \
     && unzip /tmp/javafx.zip -d /opt/ \
     && rm /tmp/javafx.zip
 
-ENV PATH_TO_FX=/opt/javafx-sdk-17.0.10/lib
+# The directory name inside the zip is javafx-sdk-21.0.1
+ENV PATH_TO_FX=/opt/javafx-sdk-21.0.1/lib
 
 WORKDIR /app
 COPY src/ ./src/
 
-# Compile the project with JavaFX modules
+# Compile
 RUN find src -name "*.java" > sources.txt \
     && javac --module-path $PATH_TO_FX --add-modules javafx.controls -d out @sources.txt
 
 # Stage 2: Runtime
-FROM debian:stable-slim
+FROM debian:bookworm-slim
 
-# Install OpenJDK 17 Runtime and JavaFX system dependencies
 RUN apt-get update && apt-get install -y \
     openjdk-17-jre \
-    wget \
-    unzip \
+    xvfb \
+    x11vnc \
+    websockify \
+    novnc \
     libgtk-3-0 \
     libglu1-mesa \
     libxtst6 \
@@ -38,16 +39,28 @@ RUN apt-get update && apt-get install -y \
     libxrender1 \
     libxi6 \
     libxxf86vm1 \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
-# Re-install JavaFX SDK for native libraries in runtime
-ENV JFX_VERSION=17.0.10
-RUN wget https://download2.gluonhq.com/openjfx/${JFX_VERSION}/openjfx-17.0.10_linux-x64_bin-sdk.zip -O /tmp/javafx.zip \
-    && unzip /tmp/javafx.zip -d /opt/ \
-    && rm /tmp/javafx.zip
+# Copy JavaFX SDK from build stage
+COPY --from=build /opt/javafx-sdk-21.0.1 /opt/javafx-sdk-21.0.1
+COPY --from=build /app/out /app/out
+
+# Setup noVNC
+RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html
 
 WORKDIR /app
-COPY --from=build /app/out ./out
 
-# Default main class: factory_abstract.Client
-ENTRYPOINT ["java", "--module-path", "/app/out:/opt/javafx-sdk-17.0.10/lib", "--add-modules", "javafx.controls", "-m", "dp.factory/factory_abstract.Client"]
+# Create a startup script
+RUN echo '#!/bin/bash\n\
+Xvfb :1 -screen 0 1024x768x24 &\n\
+export DISPLAY=:1\n\
+sleep 2\n\
+x11vnc -forever -shared -display :1 -nopw -bg\n\
+websockify --web /usr/share/novnc 8080 localhost:5900 &\n\
+java --module-path /app/out:/opt/javafx-sdk-21.0.1/lib --add-modules javafx.controls -m dp.factory/dessin.PaintApp\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
+EXPOSE 8080
+
+CMD ["/app/start.sh"]

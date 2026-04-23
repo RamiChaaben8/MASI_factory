@@ -4,6 +4,7 @@ module dp.factory {
     exports factory_method;
     exports factory_abstract;
     exports dessin;
+    opens dessin to javafx.graphics;
 }
 
 
